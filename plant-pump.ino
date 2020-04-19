@@ -1,31 +1,51 @@
 #include <Arduino.h>
-#include <U8g2lib.h>
-#include <OneButton.h>
-
-#ifdef U8X8_HAVE_HW_SPI
-#include <SPI.h>
-#endif
-#ifdef U8X8_HAVE_HW_I2C
 #include <Wire.h>
-#endif
+#include <U8g2lib.h>
+#include <Thread.h>
+#include <OneButton.h>
 
 #define PUMP_POWER_PIN      3
 #define HUMIDITY_POWER_PIN  2
 #define HUMIDITY_SENSOR_PIN A0
 
-#define SENSOR_TIME       10000   // 10s second
-#define PUMP_TIME         60000   // 60 seconds
-#define PUMP_DELAY_TIME   5000    // 5 seconds
+#define SENSOR_TIME       10   // 10s second
+#define PUMP_TIME         60   // 60 seconds
+#define PUMP_DELAY_TIME   5    // 5 seconds
 
-#define MIN_ALLOWED_HUMIDITY 10     // 70% of 100%
+struct Time {
+  unsigned int hour;
+  unsigned int minute;
+  unsigned int second;
+};
 
-U8G2_SSD1306_128X64_NONAME_F_SW_I2C u8g2(U8G2_R0, SCL, SDA, U8X8_PIN_NONE);
+U8G2_SSD1306_128X64_NONAME_2_HW_I2C u8g2(U8G2_R0, SCL, SDA, U8X8_PIN_NONE);
+OneButton screenButton(4, true);
+OneButton menuButton(5, true);
+OneButton plusButton(6, true);
+
+Thread thread = Thread();
 
 unsigned long previusSensorMillis;
 unsigned long previusPumpMillis;
 unsigned long previusPumpStartMillis;
-int humidityMin;
-int humidity;
+
+unsigned long pumpMillis[10];
+byte humidityStat[10];
+
+unsigned int sensorTime = SENSOR_TIME;
+unsigned int pumpTime = PUMP_TIME;
+unsigned int pumpDelayTime = PUMP_DELAY_TIME;
+
+int minHumidity = 2;
+int turnOnHumidity = 50;
+int currentHumidity;
+
+unsigned int hoursDelta = 0;
+unsigned int minutesDelta = 0;
+unsigned int secondsDelta = 0;
+
+byte screen = 0;
+byte menuItem = 0;
 
 int getHumidity() {
   digitalWrite(HUMIDITY_POWER_PIN, HIGH);
@@ -37,22 +57,103 @@ int getHumidity() {
 }
 
 void draw() {
-  u8g2.setFont(u8g2_font_6x10_tf);
   u8g2.setFontRefHeightExtendedText();
-  u8g2.setDrawColor(1);
   u8g2.setFontPosTop();
   u8g2.setFontDirection(0);
 
-  u8g2.drawStr(0, 0, "Plant Pump 1.0.0");
+  Time ct = getTime(millis());
+  char bufferStr[32];
+
+  if (screen == 0) {
+    u8g2.drawFrame(0, 0, 128, 16);
+    u8g2.drawBox(2, 2, 62, 12);
+    u8g2.setFont(u8g2_font_8x13B_tf);
+    u8g2.setDrawColor(0);
+
+    sprintf_P(bufferStr, PSTR("%02d/%02d"), currentHumidity, turnOnHumidity);
+    u8g2.drawStr(2, 2, bufferStr);
+
+    u8g2.setDrawColor(1);
+    u8g2.setFont(u8g2_font_8x13_tf);
+
+    sprintf_P(bufferStr, PSTR("Time: %02d:%02d:%02d"), ct.hour, ct.minute, ct.second);
+    u8g2.drawStr(0, 20, bufferStr);
+    
+    int pTimerSeconds = (previusPumpMillis + pumpTime*1000 - millis()) / 1000;
+    sprintf_P(bufferStr, PSTR("PT: %02d"), pTimerSeconds);
+    u8g2.drawStr(0, 36, bufferStr);
+
+    if (millis() - previusPumpStartMillis <= pumpDelayTime * 1000) {
+      int dTimerSeconds = (previusPumpStartMillis + pumpDelayTime*1000 - millis()) / 1000;
+      sprintf_P(bufferStr, PSTR("DT: %02d"), dTimerSeconds);
+      u8g2.drawStr(64, 36, bufferStr);
+      u8g2.drawHLine(64, 49, 48);
+    }
+
+    int sTimerSeconds = (previusSensorMillis + sensorTime * 1000 - millis()) / 1000;
+    sprintf_P(bufferStr, PSTR("ST: %02d"), sTimerSeconds);
+    u8g2.drawStr(0, 52, bufferStr);
+  }
+  if (screen == 1) {
+    sprintf_P(bufferStr, PSTR("HmOn:%02d"), turnOnHumidity);
+    u8g2.drawStr(0, 0, bufferStr);
+
+    sprintf_P(bufferStr, PSTR("HmMin:%02d"), minHumidity);
+    u8g2.drawStr(64, 0, bufferStr);
+
+    sprintf_P(bufferStr, PSTR("Time: %02d:%02d:%02d"), ct.hour, ct.minute, ct.second);
+    u8g2.drawStr(0, 16, bufferStr);
   
-  char humidityStr[32];
-  sprintf(humidityStr, "Humidity: %d; Min: %d", humidity, humidityMin);
-  u8g2.drawStr(0, 20, humidityStr);
-  
-  char timerStr[32];
-  int seconds = (previusPumpMillis + PUMP_TIME - millis()) / 1000;
-  sprintf(timerStr, "Timer: %d", seconds);
-  u8g2.drawStr(0, 40, timerStr);
+    sprintf_P(bufferStr, PSTR("PT:%02d"), pumpTime);
+    u8g2.drawStr(0, 32, bufferStr);
+    
+    sprintf_P(bufferStr, PSTR("DT:%02d"), pumpDelayTime);
+    u8g2.drawStr(64, 32, bufferStr);
+
+    sprintf_P(bufferStr, PSTR("ST:%02d"), sensorTime);
+    u8g2.drawStr(0, 48, bufferStr);
+
+    if (menuItem == 0) {
+      u8g2.drawHLine(0, 13, 56);
+    }
+    if (menuItem == 1) {
+      u8g2.drawHLine(64, 13, 128);
+    }
+    if (menuItem == 2) {
+      u8g2.drawHLine(48, 29, 16);
+    }
+    if (menuItem == 3) {
+      u8g2.drawHLine(72, 29, 16);
+    }
+    if (menuItem == 4) {
+      u8g2.drawHLine(96, 29, 16);
+    }
+    if (menuItem == 5) {
+      u8g2.drawHLine(0, 45, 40);
+    }
+    if (menuItem == 6) {
+      u8g2.drawHLine(64, 45, 40);
+    }
+    if (menuItem == 7) {
+      u8g2.drawHLine(0, 58, 40);
+    }
+  }
+
+  if (screen == 2) {
+    for (int i = 0; i < 4; i++) {
+      Time t = getTime(pumpMillis[menuItem + i]); 
+      sprintf_P(bufferStr, PSTR("%02d/10 %02d:%02d:%02d"), menuItem + i + 1, t.hour, t.minute, t.second);
+      u8g2.drawStr(0, i * 16, bufferStr);
+    }
+  }
+
+  if (screen == 3) {
+    for (int i = 0; i < 4; i++) {
+      Time t = getTime(pumpMillis[menuItem + i]); 
+      sprintf_P(bufferStr, PSTR("%02d/10 %02d:%02d:%02d"), menuItem + i + 1, t.hour, t.minute, t.second);
+      u8g2.drawStr(0, i * 16, bufferStr);
+    }
+  }
 }
 
 void setup() {
@@ -61,16 +162,29 @@ void setup() {
   
   pinMode(PUMP_POWER_PIN, OUTPUT);
   pinMode(HUMIDITY_POWER_PIN, OUTPUT);
+
+  thread.enabled = false;
+  thread.setInterval(25);
+  thread.onRun(onDuringLongPress);
+
+  screenButton.setClickTicks(50);
+  screenButton.attachClick(onClickScreenButton);
+  menuButton.setClickTicks(50);
+  menuButton.attachClick(onClickMenuButton);
+  plusButton.setClickTicks(50);
+  plusButton.attachClick(onClickPlusButton);
+  plusButton.attachLongPressStart(onLongPressStartPlusButton);
+  plusButton.attachLongPressStop(onLongPressStopPlusButton);
   
   previusSensorMillis = millis();
   previusPumpMillis = millis();
   previusPumpStartMillis = millis();
-  humidity = getHumidity();
+  currentHumidity = getHumidity();
 }
 
 void loop() {
-  humidityMin = analogRead(A1);
-  humidityMin = map(humidityMin, 0, 1023, 0, 100);
+  //currentHumidity = analogRead(A1);
+  //currentHumidity = map(turnOnHumidity, 0, 1023, 0, 100);
 
   // This number will overflow (go back to zero), after approximately 50 days.
   if (millis() < previusSensorMillis) {
@@ -79,24 +193,116 @@ void loop() {
     previusPumpStartMillis = millis();
   }
   
-  if (millis() - previusSensorMillis >= SENSOR_TIME) {
-    humidity = getHumidity();
+  if (millis() - previusSensorMillis >= sensorTime*1000) {
+    currentHumidity = getHumidity();
     previusSensorMillis = millis();
   }
 
-  if (millis() - previusPumpMillis >= PUMP_TIME) {
-    if (humidity < humidityMin && humidity > MIN_ALLOWED_HUMIDITY) {
+  if (millis() - previusPumpMillis >= pumpTime*1000) {
+    if (currentHumidity < turnOnHumidity && currentHumidity > minHumidity) {
       digitalWrite(PUMP_POWER_PIN, HIGH);
+      addPumpTime(millis());
       previusPumpStartMillis = millis();
     }
     previusPumpMillis = millis();
   }
 
-  if (millis() - previusPumpStartMillis >= PUMP_DELAY_TIME) {
+  if (millis() - previusPumpStartMillis >= pumpDelayTime*1000) {
     digitalWrite(PUMP_POWER_PIN, LOW);
   }
 
-  u8g2.clearBuffer();
-  draw();
-  u8g2.sendBuffer();
+  if(thread.shouldRun()){
+    thread.run();
+  }
+  
+  screenButton.tick();
+  menuButton.tick();
+  plusButton.tick();
+  
+  u8g2.firstPage();
+  do {
+    draw();
+  } while (u8g2.nextPage());
+}
+
+Time getTime(unsigned long millis) {
+  unsigned long actualSeconds = millis / 1000;
+  actualSeconds += ((unsigned long)hoursDelta) * 60 * 60;
+  actualSeconds += minutesDelta * 60;
+  actualSeconds += secondsDelta;
+  
+  Time time;
+  time.hour = actualSeconds / (60 * 60) % 24;
+  time.minute = actualSeconds / 60 % 60;
+  time.second = actualSeconds % 60;
+
+  return time;
+}
+
+void incrementSelectedProperty() {
+  
+  if (menuItem == 0) {
+    turnOnHumidity = ++turnOnHumidity % 100;
+  }
+  if (menuItem == 1) {
+    minHumidity = ++minHumidity % 100;
+  }
+  if (menuItem == 2) {
+    hoursDelta = ++hoursDelta % 24;
+  }
+  if (menuItem == 3) {
+    minutesDelta = ++minutesDelta % 60;
+  }
+  if (menuItem == 4) {
+    secondsDelta = ++secondsDelta % 60;
+  }
+  if (menuItem == 5) {
+    pumpTime = ++pumpTime % 100;
+  }
+  if (menuItem == 6) {
+    pumpDelayTime = ++pumpDelayTime % 100;
+  }
+}
+
+void addPumpTime(unsigned long t) {
+  for (int i = 8; i >= 0; i--) {
+    pumpMillis[i+1] = pumpMillis[i];
+  }
+
+  pumpMillis[0] = t;
+}
+
+void onClickScreenButton() {
+  screen = ++screen % 3;
+  menuItem = 0;
+}
+
+void onClickMenuButton() {
+  if (screen == 1) {
+    menuItem = ++menuItem % 8;
+  } else if(screen == 2) {
+    menuItem = ++menuItem % 7;
+  }
+}
+
+void onClickPlusButton() {
+  if (screen == 1) {
+    incrementSelectedProperty();
+  }
+}
+
+void onLongPressStartPlusButton(){
+  if (screen == 1) {
+    thread.enabled = true;
+  }
+}
+
+void onLongPressStopPlusButton() {
+  if (screen == 1) {
+    thread.enabled = false;
+  }
+}
+
+void onDuringLongPress() {
+  incrementSelectedProperty();
 }
