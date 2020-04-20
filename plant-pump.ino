@@ -40,6 +40,7 @@ unsigned int pumpDelayTime = PUMP_DELAY_TIME;
 int minHumidity = 20;
 int turnOnHumidity = 50;
 int currentHumidity = 0;
+bool isPumpWorked = false;
 
 unsigned long millisDelta = 0;
 unsigned int hoursDelta = 0;
@@ -67,35 +68,40 @@ void draw() {
   char bufferStr[32];
 
   if (screen == 0) {
-    u8g2.drawFrame(0, 0, 128, 16);
-    u8g2.drawBox(2, 2, 62, 12);
+    int diff = currentHumidity - turnOnHumidity;
+    if (diff < 0) {
+      diff = 0;
+    } if (diff > 10) {
+      diff = 10;
+    }
+    u8g2.drawFrame(0, 0, 128, 6);
+    u8g2.drawBox(2, 2, diff * 12.4, 2);
+
     u8g2.setFont(u8g2_font_8x13B_tf);
-    u8g2.setDrawColor(0);
+    sprintf_P(bufferStr, PSTR("Humidity: %02d/%02d"), currentHumidity, turnOnHumidity);
+    u8g2.drawStr(0, 7, bufferStr);
 
-    sprintf_P(bufferStr, PSTR("%02d/%02d"), currentHumidity, turnOnHumidity);
-    u8g2.drawStr(2, 2, bufferStr);
-
-    u8g2.setDrawColor(1);
     u8g2.setFont(u8g2_font_8x13_tf);
 
     sprintf_P(bufferStr, PSTR("Time: %02d:%02d:%02d"), ct.hour, ct.minute, ct.second);
-    u8g2.drawStr(0, 20, bufferStr);
+    u8g2.drawStr(0, 24, bufferStr);
     
     int pTimerSeconds = (previusPumpMillis + pumpTime*1000 - millis()) / 1000;
-    sprintf_P(bufferStr, PSTR("PT: %02d"), pTimerSeconds);
-    u8g2.drawStr(0, 36, bufferStr);
+    sprintf_P(bufferStr, PSTR("PT: %02d"), (pTimerSeconds < 0 ? 0 : pTimerSeconds));
+    u8g2.drawStr(0, 39, bufferStr);
 
-    if (millis() - previusPumpStartMillis <= pumpDelayTime * 1000) {
+    if (isPumpWorked) {
       int dTimerSeconds = (previusPumpStartMillis + pumpDelayTime*1000 - millis()) / 1000;
-      sprintf_P(bufferStr, PSTR("DT: %02d"), dTimerSeconds);
-      u8g2.drawStr(64, 36, bufferStr);
-      u8g2.drawHLine(64, 49, 48);
+      sprintf_P(bufferStr, PSTR("DT: %02d"), (dTimerSeconds < 0 ? 0 : dTimerSeconds));
+      u8g2.drawStr(64, 39, bufferStr);
+      u8g2.drawHLine(64, 51, 48);
     }
 
     int sTimerSeconds = (previusSensorMillis + sensorTime * 1000 - millis()) / 1000;
-    sprintf_P(bufferStr, PSTR("ST: %02d"), sTimerSeconds);
+    sprintf_P(bufferStr, PSTR("ST: %02d"), (sTimerSeconds < 0 ? 0 : sTimerSeconds));
     u8g2.drawStr(0, 52, bufferStr);
   }
+
   if (screen == 1) {
     sprintf_P(bufferStr, PSTR("HmOn:%02d"), turnOnHumidity);
     u8g2.drawStr(0, 0, bufferStr);
@@ -222,9 +228,6 @@ void setup() {
 }
 
 void loop() {
-  //currentHumidity = analogRead(A1);
-  //currentHumidity = map(turnOnHumidity, 0, 1023, 0, 100);
-
   // This number will overflow (go back to zero), after approximately 50 days.
   if (millis() < previusSensorMillis) {
     previusSensorMillis = millis();
@@ -242,12 +245,14 @@ void loop() {
       digitalWrite(PUMP_POWER_PIN, HIGH);
       pumpMillis.addFirst(millis());
       previusPumpStartMillis = millis();
+      isPumpWorked = true;
     }
     previusPumpMillis = millis();
   }
 
   if (millis() - previusPumpStartMillis >= pumpDelayTime*1000) {
     digitalWrite(PUMP_POWER_PIN, LOW);
+    isPumpWorked = false;
   }
 
   if (thread.shouldRun()) {
