@@ -4,6 +4,9 @@
 #include <Thread.h>
 #include <OneButton.h>
 
+#include "Array.h"
+#include "Time.h"
+
 #define PUMP_POWER_PIN      3
 #define HUMIDITY_POWER_PIN  2
 #define HUMIDITY_SENSOR_PIN A0
@@ -12,33 +15,30 @@
 #define PUMP_TIME         60   // 60 seconds
 #define PUMP_DELAY_TIME   5    // 5 seconds
 
-struct Time {
-  unsigned int hour;
-  unsigned int minute;
-  unsigned int second;
-};
-
 U8G2_SSD1306_128X64_NONAME_2_HW_I2C u8g2(U8G2_R0, SCL, SDA, U8X8_PIN_NONE);
 OneButton screenButton(4, true);
 OneButton menuButton(5, true);
 OneButton plusButton(6, true);
 
 Thread thread = Thread();
+Thread minutelyThread = Thread();
+Thread minutely20Thread = Thread();
 
 unsigned long previusSensorMillis;
 unsigned long previusPumpMillis;
 unsigned long previusPumpStartMillis;
 
-unsigned long pumpMillis[10];
-byte humidityStat[10];
+Array<unsigned long, 10> pumpMillis;
+Array<byte, 124> humidityMinutelyStat;
+Array<byte, 124> humidityMinutely20Stat;
 
 unsigned int sensorTime = SENSOR_TIME;
 unsigned int pumpTime = PUMP_TIME;
 unsigned int pumpDelayTime = PUMP_DELAY_TIME;
 
-int minHumidity = 2;
+int minHumidity = 20;
 int turnOnHumidity = 50;
-int currentHumidity;
+int currentHumidity = 0;
 
 unsigned int hoursDelta = 0;
 unsigned int minutesDelta = 0;
@@ -141,37 +141,40 @@ void draw() {
 
   if (screen == 2) {
     for (int i = 0; i < 4; i++) {
-      Time t = getTime(pumpMillis[menuItem + i]); 
+      Time t = getTime(pumpMillis.elements[menuItem + i]); 
       sprintf_P(bufferStr, PSTR("%02d/10 %02d:%02d:%02d"), menuItem + i + 1, t.hour, t.minute, t.second);
       u8g2.drawStr(0, i * 16, bufferStr);
     }
   }
 
   if (screen == 3) {
-    for (int i = 0; i < 4; i++) {
-      Time t = getTime(pumpMillis[menuItem + i]); 
-      sprintf_P(bufferStr, PSTR("%02d/10 %02d:%02d:%02d"), menuItem + i + 1, t.hour, t.minute, t.second);
-      u8g2.drawStr(0, i * 16, bufferStr);
+    sprintf_P(bufferStr, PSTR("Screen 3"));
+    u8g2.drawStr(0, 0, bufferStr);
+    for (int i = 1; i < humidityMinutelyStat.size; i++) {
+      auto x1 = 128 - i;
+      auto x2 = 127 - i;
+      auto y1 = 63 - humidityMinutelyStat.elements[i - 1] / 2;
+      auto y2 = 63 - humidityMinutelyStat.elements[i] / 2;
+      u8g2.drawLine(x1, y1, x2, y2);
     }
   }
 }
 
 void setup() {
-  //Serial.begin(9600);
+  Serial.begin(9600);
   u8g2.begin();
   
   pinMode(PUMP_POWER_PIN, OUTPUT);
   pinMode(HUMIDITY_POWER_PIN, OUTPUT);
 
   thread.enabled = false;
-  thread.setInterval(25);
-  thread.onRun(onDuringLongPress);
+  thread.setInterval(200);
+  thread.onRun([]() {
+    incrementSelectedProperty();
+  });
 
-  screenButton.setClickTicks(50);
   screenButton.attachClick(onClickScreenButton);
-  menuButton.setClickTicks(50);
   menuButton.attachClick(onClickMenuButton);
-  plusButton.setClickTicks(50);
   plusButton.attachClick(onClickPlusButton);
   plusButton.attachLongPressStart(onLongPressStartPlusButton);
   plusButton.attachLongPressStop(onLongPressStopPlusButton);
@@ -180,6 +183,16 @@ void setup() {
   previusPumpMillis = millis();
   previusPumpStartMillis = millis();
   currentHumidity = getHumidity();
+
+  minutelyThread.setInterval(60000UL); // every minute
+  minutelyThread.onRun([]() {
+    humidityMinutelyStat.addFirst(currentHumidity);
+  });
+
+  minutely20Thread.setInterval(1200000UL); // every 20 minutes
+  minutely20Thread.onRun([]() {
+    humidityMinutely20Stat.addFirst(currentHumidity);
+  });
 }
 
 void loop() {
@@ -201,7 +214,7 @@ void loop() {
   if (millis() - previusPumpMillis >= pumpTime*1000) {
     if (currentHumidity < turnOnHumidity && currentHumidity > minHumidity) {
       digitalWrite(PUMP_POWER_PIN, HIGH);
-      addPumpTime(millis());
+      pumpMillis.addFirst(millis());
       previusPumpStartMillis = millis();
     }
     previusPumpMillis = millis();
@@ -211,10 +224,14 @@ void loop() {
     digitalWrite(PUMP_POWER_PIN, LOW);
   }
 
-  if(thread.shouldRun()){
+  if(thread.shouldRun()) {
     thread.run();
   }
-  
+
+  if(minutelyThread.shouldRun()) {
+    minutelyThread.run();
+  }
+
   screenButton.tick();
   menuButton.tick();
   plusButton.tick();
@@ -264,16 +281,8 @@ void incrementSelectedProperty() {
   }
 }
 
-void addPumpTime(unsigned long t) {
-  for (int i = 8; i >= 0; i--) {
-    pumpMillis[i+1] = pumpMillis[i];
-  }
-
-  pumpMillis[0] = t;
-}
-
 void onClickScreenButton() {
-  screen = ++screen % 3;
+  screen = ++screen % 4;
   menuItem = 0;
 }
 
@@ -301,8 +310,4 @@ void onLongPressStopPlusButton() {
   if (screen == 1) {
     thread.enabled = false;
   }
-}
-
-void onDuringLongPress() {
-  incrementSelectedProperty();
 }

@@ -1,0 +1,7 @@
+{
+    "port": "COM6",
+    "board": "arduino:avr:nano",
+    "configuration": "cpu=atmega328old",
+    "programmer": "AVR ISP",
+    "sketch": "plant-pump.ino"
+}
