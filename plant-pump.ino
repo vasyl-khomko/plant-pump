@@ -14,15 +14,16 @@
 #define SENSOR_TIME       10   // 10s second
 #define PUMP_TIME         60   // 60 seconds
 #define PUMP_DELAY_TIME   5    // 5 seconds
+#define SCREENS_COUNT     5
 
 U8G2_SSD1306_128X64_NONAME_2_HW_I2C u8g2(U8G2_R0, SCL, SDA, U8X8_PIN_NONE);
-OneButton screenButton(4, true);
-OneButton menuButton(5, true);
-OneButton plusButton(6, true);
+OneButton screenButton(7, true);
+OneButton menuButton(8, true);
+OneButton plusButton(9, true);
 
 Thread thread = Thread();
 Thread minutelyThread = Thread();
-Thread minutely20Thread = Thread();
+Thread minutely30Thread = Thread();
 
 unsigned long previusSensorMillis;
 unsigned long previusPumpMillis;
@@ -30,7 +31,7 @@ unsigned long previusPumpStartMillis;
 
 Array<unsigned long, 10> pumpMillis;
 Array<byte, 124> humidityMinutelyStat;
-Array<byte, 124> humidityMinutely20Stat;
+Array<byte, 124> humidityMinutely30Stat;
 
 unsigned int sensorTime = SENSOR_TIME;
 unsigned int pumpTime = PUMP_TIME;
@@ -40,6 +41,7 @@ int minHumidity = 20;
 int turnOnHumidity = 50;
 int currentHumidity = 0;
 
+unsigned long millisDelta = 0;
 unsigned int hoursDelta = 0;
 unsigned int minutesDelta = 0;
 unsigned int secondsDelta = 0;
@@ -148,20 +150,43 @@ void draw() {
   }
 
   if (screen == 3) {
-    sprintf_P(bufferStr, PSTR("Screen 3"));
-    u8g2.drawStr(0, 0, bufferStr);
-    for (int i = 1; i < humidityMinutelyStat.size; i++) {
-      auto x1 = 128 - i;
-      auto x2 = 127 - i;
-      auto y1 = 63 - humidityMinutelyStat.elements[i - 1] / 2;
-      auto y2 = 63 - humidityMinutelyStat.elements[i] / 2;
-      u8g2.drawLine(x1, y1, x2, y2);
-    }
+    drawGraph(humidityMinutelyStat, 20);
+  } 
+
+  if (screen == 4) {
+    drawGraph(humidityMinutely30Stat, 1);
+  }
+}
+
+void drawGraph(Array<byte, 124> &array, int interval) {
+  char bufferStr[32];
+  u8g2.setFont(u8g2_font_p01type_tn );
+  u8g2.drawHLine(13, 54, 114);
+  u8g2.drawVLine(13, 0, 54);
+
+  for (int i = 0; i < 5; i++) {
+    sprintf_P(bufferStr, PSTR("%d"), 100 - i * 20);
+    u8g2.drawStr(0, i * 10, bufferStr);
+    u8g2.drawHLine(10, 4 + i * 10, 3);
+  }
+
+  for (int i = 1; i <= 5; i++) {
+    sprintf_P(bufferStr, PSTR("%02d"), i * interval);
+    u8g2.drawStr(9 + i * 20, 58, bufferStr);
+    u8g2.drawVLine(13 + i * 20, 54, 3);
+  }
+
+  for (int i = 1; i < 114; i++) {
+    auto x1 = 13 + i - 1;
+    auto x2 = 13 + i;
+    auto y1 = 54 - array.elements[i - 1] / 2;
+    auto y2 = 54 - array.elements[i] / 2;
+    u8g2.drawLine(x1, y1, x2, y2);
   }
 }
 
 void setup() {
-  Serial.begin(9600);
+  //Serial.begin(9600);
   u8g2.begin();
   
   pinMode(PUMP_POWER_PIN, OUTPUT);
@@ -189,9 +214,10 @@ void setup() {
     humidityMinutelyStat.addFirst(currentHumidity);
   });
 
-  minutely20Thread.setInterval(1200000UL); // every 20 minutes
-  minutely20Thread.onRun([]() {
-    humidityMinutely20Stat.addFirst(currentHumidity);
+  minutely30Thread.setInterval(1800000UL); // every 30 minutes
+  minutely30Thread.onRun([]() {
+    humidityMinutely30Stat.addFirst(currentHumidity);
+    screen = SCREENS_COUNT; // Sleep
   });
 }
 
@@ -224,12 +250,16 @@ void loop() {
     digitalWrite(PUMP_POWER_PIN, LOW);
   }
 
-  if(thread.shouldRun()) {
+  if (thread.shouldRun()) {
     thread.run();
   }
 
-  if(minutelyThread.shouldRun()) {
+  if (minutelyThread.shouldRun()) {
     minutelyThread.run();
+  }
+
+  if (minutely30Thread.shouldRun()) {
+    minutely30Thread.run();
   }
 
   screenButton.tick();
@@ -243,10 +273,7 @@ void loop() {
 }
 
 Time getTime(unsigned long millis) {
-  unsigned long actualSeconds = millis / 1000;
-  actualSeconds += ((unsigned long)hoursDelta) * 60 * 60;
-  actualSeconds += minutesDelta * 60;
-  actualSeconds += secondsDelta;
+  unsigned long actualSeconds = (millis + millisDelta) / 1000;
   
   Time time;
   time.hour = actualSeconds / (60 * 60) % 24;
@@ -254,6 +281,12 @@ Time getTime(unsigned long millis) {
   time.second = actualSeconds % 60;
 
   return time;
+}
+
+void updateMillisDelta() {
+  millisDelta = (unsigned long) hoursDelta * 3600000UL;
+  millisDelta += (unsigned long) minutesDelta * 60000UL;
+  millisDelta += (unsigned long) secondsDelta * 1000UL;
 }
 
 void incrementSelectedProperty() {
@@ -266,12 +299,15 @@ void incrementSelectedProperty() {
   }
   if (menuItem == 2) {
     hoursDelta = ++hoursDelta % 24;
+    updateMillisDelta();
   }
   if (menuItem == 3) {
     minutesDelta = ++minutesDelta % 60;
+    updateMillisDelta();
   }
   if (menuItem == 4) {
     secondsDelta = ++secondsDelta % 60;
+    updateMillisDelta();
   }
   if (menuItem == 5) {
     pumpTime = ++pumpTime % 100;
@@ -282,7 +318,7 @@ void incrementSelectedProperty() {
 }
 
 void onClickScreenButton() {
-  screen = ++screen % 4;
+  screen = ++screen % SCREENS_COUNT;
   menuItem = 0;
 }
 
