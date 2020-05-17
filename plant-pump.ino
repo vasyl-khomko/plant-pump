@@ -7,9 +7,9 @@
 #include "Array.h"
 #include "Time.h"
 
-#define PUMP_POWER_PIN      3
+#define PUMP_POWER_PIN      8
 #define HUMIDITY_POWER_PIN  2
-#define HUMIDITY_SENSOR_PIN A0
+#define HUMIDITY_SENSOR_PIN A3
 
 #define SENSOR_TIME       10   // 10s second
 #define PUMP_TIME         60   // 60 seconds
@@ -17,11 +17,12 @@
 #define SCREENS_COUNT     5
 
 U8G2_SSD1306_128X64_NONAME_2_HW_I2C u8g2(U8G2_R0, SCL, SDA, U8X8_PIN_NONE);
-OneButton screenButton(7, true);
-OneButton menuButton(8, true);
-OneButton plusButton(9, true);
+OneButton screenButton(9, true);
+OneButton menuButton(10, true);
+OneButton plusButton(A1, true);
+OneButton minusButton(A2, true);
 
-Thread thread = Thread();
+Thread buttonsHandlerThread = Thread();
 Thread minutelyThread = Thread();
 Thread minutely30Thread = Thread();
 
@@ -47,8 +48,9 @@ unsigned int hoursDelta = 0;
 unsigned int minutesDelta = 0;
 unsigned int secondsDelta = 0;
 
-byte screen = 0;
-byte menuItem = 0;
+int screen = 0;
+int menuItem = 0;
+int increment = 0;
 
 int getHumidity() {
   digitalWrite(HUMIDITY_POWER_PIN, HIGH);
@@ -192,16 +194,15 @@ void drawGraph(Array<byte, 124> &array, int interval) {
 }
 
 void setup() {
-  //Serial.begin(9600);
   u8g2.begin();
   
   pinMode(PUMP_POWER_PIN, OUTPUT);
   pinMode(HUMIDITY_POWER_PIN, OUTPUT);
 
-  thread.enabled = false;
-  thread.setInterval(200);
-  thread.onRun([]() {
-    incrementSelectedProperty();
+  buttonsHandlerThread.enabled = false;
+  buttonsHandlerThread.setInterval(200);
+  buttonsHandlerThread.onRun([]() {
+    incrementSelectedProperty(increment);
   });
 
   screenButton.attachClick(onClickScreenButton);
@@ -209,6 +210,9 @@ void setup() {
   plusButton.attachClick(onClickPlusButton);
   plusButton.attachLongPressStart(onLongPressStartPlusButton);
   plusButton.attachLongPressStop(onLongPressStopPlusButton);
+  minusButton.attachClick(onClickMinusButton);
+  minusButton.attachLongPressStart(onLongPressStartMinusButton);
+  minusButton.attachLongPressStop(onLongPressStopMinusButton);
   
   previusSensorMillis = millis();
   previusPumpMillis = millis();
@@ -223,7 +227,7 @@ void setup() {
   minutely30Thread.setInterval(1800000UL); // every 30 minutes
   minutely30Thread.onRun([]() {
     humidityMinutely30Stat.addFirst(currentHumidity);
-    screen = SCREENS_COUNT; // Sleep
+    screen = -1; // Sleep
   });
 }
 
@@ -255,8 +259,8 @@ void loop() {
     isPumpWorked = false;
   }
 
-  if (thread.shouldRun()) {
-    thread.run();
+  if (buttonsHandlerThread.shouldRun()) {
+    buttonsHandlerThread.run();
   }
 
   if (minutelyThread.shouldRun()) {
@@ -270,6 +274,7 @@ void loop() {
   screenButton.tick();
   menuButton.tick();
   plusButton.tick();
+  minusButton.tick();
   
   u8g2.firstPage();
   do {
@@ -294,31 +299,43 @@ void updateMillisDelta() {
   millisDelta += (unsigned long) secondsDelta * 1000UL;
 }
 
-void incrementSelectedProperty() {
+int incrementProperty(int currentValue, int increment, int maxValue) {
+  int value = currentValue + increment;
+
+  if (value >= maxValue) {
+    value = 0;  
+  } else if (value < 0) {
+    value = maxValue-1;
+  }
+
+  return value;
+}
+
+void incrementSelectedProperty(int increment) {
   
   if (menuItem == 0) {
-    turnOnHumidity = ++turnOnHumidity % 100;
+    turnOnHumidity = incrementProperty(turnOnHumidity, increment, 100);
   }
   if (menuItem == 1) {
-    minHumidity = ++minHumidity % 100;
+    minHumidity = incrementProperty(minHumidity, increment, 100);
   }
   if (menuItem == 2) {
-    hoursDelta = ++hoursDelta % 24;
+    hoursDelta = incrementProperty(hoursDelta, increment, 24);
     updateMillisDelta();
   }
   if (menuItem == 3) {
-    minutesDelta = ++minutesDelta % 60;
+    minutesDelta = incrementProperty(minutesDelta, increment, 60);
     updateMillisDelta();
   }
   if (menuItem == 4) {
-    secondsDelta = ++secondsDelta % 60;
+    secondsDelta = incrementProperty(secondsDelta, increment, 60);
     updateMillisDelta();
   }
   if (menuItem == 5) {
-    pumpTime = ++pumpTime % 100;
+    pumpTime = incrementProperty(pumpTime, increment, 100);
   }
   if (menuItem == 6) {
-    pumpDelayTime = ++pumpDelayTime % 100;
+    pumpDelayTime = incrementProperty(pumpDelayTime, increment, 100);
   }
 }
 
@@ -337,18 +354,38 @@ void onClickMenuButton() {
 
 void onClickPlusButton() {
   if (screen == 1) {
-    incrementSelectedProperty();
+    incrementSelectedProperty(1);
+  }
+}
+
+void onClickMinusButton() {
+  if (screen == 1) {
+    incrementSelectedProperty(-1);
   }
 }
 
 void onLongPressStartPlusButton(){
   if (screen == 1) {
-    thread.enabled = true;
+    buttonsHandlerThread.enabled = true;
+    increment = 1;
   }
 }
 
 void onLongPressStopPlusButton() {
   if (screen == 1) {
-    thread.enabled = false;
+    buttonsHandlerThread.enabled = false;
+  }
+}
+
+void onLongPressStartMinusButton(){
+  if (screen == 1) {
+    buttonsHandlerThread.enabled = true;
+    increment = -1;
+  }
+}
+
+void onLongPressStopMinusButton() {
+  if (screen == 1) {
+    buttonsHandlerThread.enabled = false;
   }
 }
